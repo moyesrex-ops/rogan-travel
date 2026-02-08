@@ -1,0 +1,8 @@
+1) Install Node.js LTS (v18+)
+2) Extract ZIP
+3) Open Command Prompt in this folder
+4) Run:
+   npm install
+   npm run dev
+5) Visit:
+   http://localhost:3000
