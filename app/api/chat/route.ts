@@ -1,68 +1,109 @@
 import { NextResponse } from "next/server";
 
-export const runtime = "nodejs"; // important for server-side key usage
+export const runtime = "nodejs";
 
-type Body = { message?: string };
+type ChatBody = { message?: string };
+
+function fallbackReply(userMsg: string) {
+  const m = userMsg.toLowerCase();
+
+  // Lead-qualifier style fallback (used only if Groq is missing/down)
+  if (m.includes("study") || m.includes("student")) {
+    return `Study visa support ✅
+Tell me:
+1) Country (UK/USA/Canada/Australia/Germany/Ireland)
+2) Intended intake month/year
+3) Your highest qualification + GPA (if any)
+4) Do you already have admission?
+
+If you want fast help, message us on WhatsApp: 08126204242`;
+  }
+
+  if (m.includes("visit") || m.includes("tourist")) {
+    return `Visit visa help ✅
+Tell me:
+1) Destination country
+2) Travel date range
+3) Purpose (tourism / family / business)
+4) Employment/business proof + available funds
+
+If you want fast help, message us on WhatsApp: 08126204242`;
+  }
+
+  if (m.includes("flight")) {
+    return `Flight bookings ✈️
+Tell me:
+From → To, travel dates, number of passengers, cabin class (Economy/Business/First).
+We’ll send the best options + price.`;
+  }
+
+  if (m.includes("hotel")) {
+    return `Hotel reservations 🏨
+Tell me:
+City, check-in/out dates, number of guests, budget range, and preferred area.
+We’ll recommend verified options.`;
+  }
+
+  return `Tell me what you need (study visa, visit visa, flights, hotels, insurance, documents) + your destination and timeline.`;
+}
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as Body;
-  const message = (body.message || "").trim();
-
-  if (!message) {
-    return NextResponse.json({ reply: "Please type your question.", debug: { usedOpenAI: false, reason: "empty_message" } });
-  }
-
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) {
-    return NextResponse.json({
-      reply: "Server is missing OPENAI_API_KEY.",
-      debug: { usedOpenAI: false, reason: "missing_key" },
-    }, { status: 500 });
-  }
-
   try {
-    const r = await fetch("https://api.openai.com/v1/responses", {
+    const body = (await req.json()) as ChatBody;
+    const message = (body?.message || "").trim();
+
+    if (!message) {
+      return NextResponse.json({ reply: "Please type a message." }, { status: 400 });
+    }
+
+    const GROQ_API_KEY = process.env.GROQ_API_KEY;
+
+    // If no key, use fallback so the site still works
+    if (!GROQ_API_KEY) {
+      return NextResponse.json({ reply: fallbackReply(message) });
+    }
+
+    const system = `
+You are the official assistant for Rogan Travel & Tour (Nigeria).
+Business focus: visa assistance (study/visit), travel bookings (flights/hotels), travel insurance, document processing.
+Rules:
+- Do NOT show or quote prices/fees for visa assistance or document processing. For those, encourage WhatsApp contact.
+- For flights/hotels/insurance: you may discuss estimated ranges and what info is needed to quote.
+- Be concise, professional, and ask 2–5 clarifying questions when needed.
+Business contact:
+- WhatsApp/Phone: 08126204242, 08165096822
+- Email: rogantravelandtour@gmail.com
+Address: 8 Obilor Street, Rumuomasi, Port Harcourt, Nigeria
+`;
+
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${key}`,
+        Authorization: `Bearer ${GROQ_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        input: [
-          {
-            role: "system",
-            content:
-              "You are Rogan Travel & Tour’s assistant. Be warm, African + global professional. Ask 1–2 clarifying questions when needed. For visa help: give a checklist, timelines, and next steps. Always offer WhatsApp contact. Do NOT mention any 'application fee price'.",
-          },
+        model: "llama3-70b-8192",
+        temperature: 0.5,
+        max_tokens: 350,
+        messages: [
+          { role: "system", content: system.trim() },
           { role: "user", content: message },
         ],
       }),
     });
 
-    const data = await r.json();
-
-    // Responses API returns text in output[].content[].text
-    const text =
-      data?.output?.[0]?.content?.map((c: any) => c?.text).filter(Boolean).join("") ||
-      data?.output_text ||
-      "";
-
-    if (!r.ok || !text) {
-      return NextResponse.json({
-        reply: "OpenAI call failed, using fallback. Check Vercel logs.",
-        debug: { usedOpenAI: false, reason: "openai_error", status: r.status, data },
-      }, { status: 200 });
+    if (!resp.ok) {
+      // If Groq errors or rate-limits, fall back instead of breaking the UI
+      return NextResponse.json({ reply: fallbackReply(message) }, { status: 200 });
     }
 
-    return NextResponse.json({
-      reply: text,
-      debug: { usedOpenAI: true },
-    });
-  } catch (err: any) {
-    return NextResponse.json({
-      reply: "OpenAI call crashed, using fallback. Check Vercel logs.",
-      debug: { usedOpenAI: false, reason: "exception", error: String(err?.message || err) },
-    }, { status: 200 });
+    const data = await resp.json();
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() || fallbackReply(message);
+
+    return NextResponse.json({ reply });
+  } catch {
+    return NextResponse.json({ reply: "Something went wrong. Please try again." }, { status: 200 });
   }
 }
