@@ -1,51 +1,68 @@
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs"; // important for server-side key usage
+
+type Body = { message?: string };
+
 export async function POST(req: Request) {
+  const body = (await req.json().catch(() => ({}))) as Body;
+  const message = (body.message || "").trim();
+
+  if (!message) {
+    return NextResponse.json({ reply: "Please type your question.", debug: { usedOpenAI: false, reason: "empty_message" } });
+  }
+
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) {
+    return NextResponse.json({
+      reply: "Server is missing OPENAI_API_KEY.",
+      debug: { usedOpenAI: false, reason: "missing_key" },
+    }, { status: 500 });
+  }
+
   try {
-    const { message } = await req.json();
-
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { reply: "Server misconfigured: OPENAI_API_KEY is missing." },
-        { status: 500 }
-      );
-    }
-
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Authorization": `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-5.2",
-        messages: [
+        model: "gpt-4o-mini",
+        input: [
           {
             role: "system",
             content:
-              "You are Rogan Travel & Tour’s assistant. Be concise, professional, Nigeria-aware, and always push WhatsApp contact as the next step when the user wants to proceed. Never mention internal fees unless asked directly.",
+              "You are Rogan Travel & Tour’s assistant. Be warm, African + global professional. Ask 1–2 clarifying questions when needed. For visa help: give a checklist, timelines, and next steps. Always offer WhatsApp contact. Do NOT mention any 'application fee price'.",
           },
-          { role: "user", content: String(message ?? "") },
+          { role: "user", content: message },
         ],
       }),
     });
 
-    if (!r.ok) {
-      const errText = await r.text();
-      return NextResponse.json(
-        { reply: `OpenAI error (${r.status}): ${errText}` },
-        { status: 500 }
-      );
+    const data = await r.json();
+
+    // Responses API returns text in output[].content[].text
+    const text =
+      data?.output?.[0]?.content?.map((c: any) => c?.text).filter(Boolean).join("") ||
+      data?.output_text ||
+      "";
+
+    if (!r.ok || !text) {
+      return NextResponse.json({
+        reply: "OpenAI call failed, using fallback. Check Vercel logs.",
+        debug: { usedOpenAI: false, reason: "openai_error", status: r.status, data },
+      }, { status: 200 });
     }
 
-    const data = await r.json();
-    const reply = data?.choices?.[0]?.message?.content ?? "No reply returned.";
-
-    return NextResponse.json({ reply });
-  } catch (e: any) {
-    return NextResponse.json(
-      { reply: `Server error: ${e?.message ?? "unknown"}` },
-      { status: 500 }
-    );
+    return NextResponse.json({
+      reply: text,
+      debug: { usedOpenAI: true },
+    });
+  } catch (err: any) {
+    return NextResponse.json({
+      reply: "OpenAI call crashed, using fallback. Check Vercel logs.",
+      debug: { usedOpenAI: false, reason: "exception", error: String(err?.message || err) },
+    }, { status: 200 });
   }
 }
